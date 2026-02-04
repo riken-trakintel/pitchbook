@@ -14,32 +14,20 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium_stealth import stealth
 
-# Initialize Logger
 logger = CustomLogger(log_folder="logs")
 
-# Database connections
-try:
-    masterclient = MongoClient("mongodb://admin9:i38kjmx35@localhost:27017/?authSource=admin&authMechanism=SCRAM-SHA-256&readPreference=primary&tls=true&tlsAllowInvalidCertificates=true&directConnection=true", serverSelectionTimeoutMS=5000)
-    # Check connection
-    masterclient.admin.command('ping')
-    clientDB = masterclient.PITCHBOOK
-    data_collection = clientDB['OrganizationDetails']
+masterclient = MongoClient("mongodb://admin9:i38kjmx35@localhost:27017/?authSource=admin&authMechanism=SCRAM-SHA-256&readPreference=primary&tls=true&tlsAllowInvalidCertificates=true&directConnection=true", serverSelectionTimeoutMS=5000)
+masterclient.admin.command('ping')
+clientDB = masterclient.PITCHBOOK
+data_collection = clientDB['OrganizationDetails']
 
-    masterdb = masterclient.STARTUPSCRAPERDATA
-    org_collection = masterdb['OrganiztionDetails']
-    stats_collection = masterdb['run_stats']
-    logger.info("Connected to MongoDB successfully.")
-except Exception as e:
-    logger.error(f"MongoDB connection failed: {e}")
-    # Fallback or exit? For now, we'll try to continue but functions will likely fail
-    org_collection = None
-    data_collection = None
-    stats_collection = None
-print(f"DEBUG: data_collection is {data_collection}")
+masterdb = masterclient.STARTUPSCRAPERDATA
+org_collection = masterdb['OrganiztionDetails']
+stats_collection = masterdb['run_stats']
+logger.info("Connected to MongoDB successfully.")
 
 def read_company_name(numberofrecords=10):
     if org_collection is None:
-        # Fallback to some sample data or empty list if DB is down
         logger.warning("DB unavailable, returning sample keywords.")
         return [{"organization_name": "QNu Labs"}]
         
@@ -96,7 +84,6 @@ def get_companies_list(search):
                     try:
                         href = link.get_attribute('href')
                         if href and '/profiles/company/' in href:
-                            # Normalize and deduplicate
                             clean_url = href.split('?')[0].split('#')[0]
                             if clean_url not in company_urls:
                                 company_urls.append(clean_url)
@@ -113,7 +100,7 @@ def get_companies_list(search):
                     return company_urls
                 else:
                     quit(driver)
-                    continue
+                    return []
             except Exception as e:
                 logger.error(f"Error parsing search results: {e}")
                 quit(driver)
@@ -141,33 +128,31 @@ def collect_page_details():
         companies_url = get_companies_list(search)
         
         for company_url in companies_url:
-            logger.info(f"Scraping detailed info for: {company_url}")
-            
-            data = scrape_company(company_url, logger)
-            
-            if data:
-                # Save to database using save_to_db from z.py
-                if data_collection:
-                    save_to_db(data, data_collection, stats_collection, logger)
-                    logger.info(f"Successfully saved {search} data to DB")
+            try:
+                logger.info(f"Scraping detailed info for: {company_url}")
+                data = scrape_company(company_url, logger)
+                
+                if data:
+                    if data_collection is not None:
+                        save_to_db(data, data_collection, stats_collection, logger)
+                        logger.info(f"Successfully saved {search} data to DB")
+                    else:
+                        filename = f"json_data/scraped_{normalize_key(search)}.json"
+                        with open(filename, "w", encoding="utf-8") as f:
+                            json.dump(data, f, indent=4)
+                        logger.info(f"DB unavailable. Saved {search} data to local file: {filename}")
                 else:
-                    # Local fallback
-                    filename = f"scraped_{normalize_key(search)}.json"
-                    with open(filename, "w", encoding="utf-8") as f:
-                        json.dump(data, f, indent=4)
-                    logger.info(f"DB unavailable. Saved {search} data to local file: {filename}")
-            else:
-                logger.warning(f"Failed to scrape data for {company_url}")
-            
-            # Sleep between individual company scrapes to be polite
-            sleep_random(10, 20, for_reason="throttle between company profiles")
+                    logger.warning(f"Failed to scrape data for {company_url}")
+                
+                sleep_random(10, 20, for_reason="throttle between company profiles")
+            except Exception as e:
+                logger.error(f"Error scraping {company_url}: {e}")
 
 if __name__ == "__main__":
-    # Main execution loop
     for run in range(50):
         try:
             logger.info(f"Starting run #{run + 1}")
             collect_page_details()
         except Exception as e:
             logger.error(f"Main loop error on run {run}: {e}")
-            time.sleep(30) # Wait before retry on crash
+            time.sleep(30)

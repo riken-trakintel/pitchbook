@@ -1,6 +1,3 @@
-# PitchBook and Tracxn Scraper Utility
-
-
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -53,10 +50,9 @@ def sleep_random(min_sec=3, max_sec=6, for_reason=""):
 
 def get_options():
     options = uc.ChromeOptions()
-    # options.add_argument("--headless")
+    options.add_argument("--headless")
     options.add_argument("--disable-blink-features=AutomationControlled")
     prx = random.choice(PROXIES)
-    print(f'proxy : {prx}')
     options.add_argument(f"--proxy-server=http://{prx}")
     options.add_argument("--disable-web-security")
     options.add_argument("--allow-running-insecure-content")
@@ -117,18 +113,15 @@ def extract_pitchbook_general_info(soup):
         label_elem = item.select_one('h5, .font-weight-bold')
         if label_elem:
             label = label_elem.text.strip()
-            # Find the value which is usually a sibling or nested div/a
             value_elem = item.select_one('a, .font-weight-regular')
             if value_elem:
                 info[normalize_key(label)] = value_elem.get('title') or value_elem.text.strip()
     
-    # Extract Corporate Office
     office_elem = gen_info_sec.select_one('.pp-contact-info_corporate-office')
     if office_elem:
         address_lines = [li.text.strip() for li in office_elem.select('ul li')]
         info['corporate_office'] = ", ".join(address_lines)
         
-    # Social links
     socials = {}
     for social in gen_info_sec.select('.info-item__social div a'):
         platform = social.get('aria-label', '').replace(' link', '').lower()
@@ -153,7 +146,6 @@ def extract_pitchbook_table(section_soup):
         if len(cells) == len(headers):
             row_data = {}
             for i, cell in enumerate(cells):
-                # Handle gray boxes (blurred data)
                 if cell.select_one('.data-table__gray-box'):
                     row_data[headers[i]] = "[Locked/Blurred]"
                 else:
@@ -211,13 +203,10 @@ def extract_pitchbook_data(html_content, url):
     return data
 
 def extract_company_data(html_content, url):
-    # Detect if it's PitchBook or Tracxn (based on typical PitchBook IDs)
     if 'pp-overview' in html_content or 'pitchbook' in html_content.lower():
         return extract_pitchbook_data(html_content, url)
     
-    # Fallback to existing Tracxn logic if needed, but for now we focus on PitchBook
     soup = BeautifulSoup(html_content, 'html.parser')
-    # ... (existing Tracxn logic if you want to keep it, but I'll simplify it)
     return extract_pitchbook_data(html_content, url)
 
 def save_to_db(data, collection, stats_collection, logger, unique_field="source_url"):
@@ -230,7 +219,6 @@ def save_to_db(data, collection, stats_collection, logger, unique_field="source_
         unique_field (str): Field used to identify uniqueness (default: source_url)
         logger: CustomLogger instance
     """
-
     if not data or unique_field not in data:
         if logger:
             logger.error("Invalid data or missing unique field")
@@ -238,7 +226,6 @@ def save_to_db(data, collection, stats_collection, logger, unique_field="source_
             print("Invalid data or missing unique field")
         return
 
-    # Add/update metadata
     data["updated_at"] = datetime.utcnow()
 
     query = {unique_field: data[unique_field]}
@@ -249,7 +236,6 @@ def save_to_db(data, collection, stats_collection, logger, unique_field="source_
             "created_at": datetime.utcnow()
         }
     }
-
     try:
         result = collection.update_one(
             query,
@@ -263,7 +249,7 @@ def save_to_db(data, collection, stats_collection, logger, unique_field="source_
             else:
                 print(f"Updated existing document: {data[unique_field]}")
         elif result.upserted_id:
-            if stats_collection:
+            if stats_collection is not None:
                 stats_collection.update_one(
                     {"_id": "update_run_stats"},
                     {"$inc": {"added_count": 1}}
@@ -287,9 +273,9 @@ class ScrapeCompanyDetails:
             
         self.logger = logger
         self.company_resource = None
-        self.driver = None # Initialize driver here
+        self.driver = None
         self.wait = ''
-        self.get_driver_url() # Call get_driver_url to initialize driver and fetch page
+        self.get_driver_url()
 
     def find_element(self, locator: tuple[By, str], timeout: int = 10):
         """Find element with explicit wait"""
@@ -298,7 +284,6 @@ class ScrapeCompanyDetails:
             element = wait.until(EC.presence_of_element_located(locator))
             return element
         except TimeoutException:
-            # Assuming config.enable_logging is not directly available here, use self.logger
             self.logger.error(f"✗ Element not found: {locator}")
             return None
         except Exception as e:
@@ -399,24 +384,54 @@ def scrape_company(url, logger=None):
         if not hasattr(logger, 'handlers') or not logger.handlers:
             logging.basicConfig(level=logging.INFO)
     
-    scraper = ScrapeCompanyDetails(url, logger)
-    data = scraper.scrape()
-    breakpoint()
+    data = {}
+    for _ in range(3):
+        scraper = ScrapeCompanyDetails(url, logger)
+        data = scraper.scrape()
+        if data['company_name'] == "Unknown":
+            logger.info(f"could not sucessfully scraped data for {url}")
+            continue
+        else:
+            break
+        
     if data:
         if hasattr(logger, 'info'):
             logger.info(f"Successfully scraped data for {url}")
+            return data
+            
     else:
         if hasattr(logger, 'error'):
             logger.error(f"Failed to scrape data for {url}")
+            return {}
     
-    return data
 
 if __name__ == "__main__":
+    from pymongo import MongoClient
+    from logger import CustomLogger
+    logger = CustomLogger(log_folder="logs")
+    masterclient = MongoClient("mongodb://admin9:i38kjmx35@localhost:27017/?authSource=admin&authMechanism=SCRAM-SHA-256&readPreference=primary&tls=true&tlsAllowInvalidCertificates=true&directConnection=true", serverSelectionTimeoutMS=5000)
+    masterclient.admin.command('ping')
+    clientDB = masterclient.PITCHBOOK
+    data_collection = clientDB['OrganizationDetails']
+
+    masterdb = masterclient.STARTUPSCRAPERDATA
+    org_collection = masterdb['OrganiztionDetails']
+    stats_collection = masterdb['run_stats']
+    logger.info("Connected to MongoDB successfully.")
     sample_url = "https://pitchbook.com/profiles/company/279690-49"
     sample_url = "https://pitchbook.com/profiles/company/925292-08"
     sample_url = "https://pitchbook.com/profiles/company/41082-40"
     sample_url = "https://pitchbook.com/profiles/company/233787-07"
     data = scrape_company(sample_url)
+    search = sample_url.split("/")[-1]
     if data:
-        with open("scraped_data.json", "w", encoding="utf-8") as f: json.dump(data, f, indent=4)
-        print("Data saved to scraped_data.json")
+        if data_collection is not None:
+            save_to_db(data, data_collection, stats_collection, logger)
+            logger.info(f"Successfully saved {search} data to DB")
+        else:
+            filename = f"scraped_{normalize_key(search)}.json"
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+            logger.info(f"DB unavailable. Saved {search} data to local file: {filename}")
+    else:
+        logger.warning(f"Failed to scrape data for {sample_url}")
