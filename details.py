@@ -53,9 +53,10 @@ def sleep_random(min_sec=3, max_sec=6, for_reason=""):
 
 def get_options():
     options = uc.ChromeOptions()
-    options.add_argument("--headless")
+    # options.add_argument("--headless")
     options.add_argument("--disable-blink-features=AutomationControlled")
     prx = random.choice(PROXIES)
+    print(f'proxy : {prx}')
     options.add_argument(f"--proxy-server=http://{prx}")
     options.add_argument("--disable-web-security")
     options.add_argument("--allow-running-insecure-content")
@@ -372,7 +373,6 @@ class ScrapeCompanyDetails:
                 self.quit()
                 continue
             self.company_resource = self.driver.page_source
-            with open("company_resource.html", "w", encoding="utf-8") as f: f.write(self.company_resource)
             return self.company_resource
         else :
             self.logger.error("Failed to bypass captcha after multiple attempts.")
@@ -399,22 +399,9 @@ def scrape_company(url, logger=None):
         if not hasattr(logger, 'handlers') or not logger.handlers:
             logging.basicConfig(level=logging.INFO)
     
-    # Try reading from local file first if it exists for development/testing
-    if os.path.exists("company_resource.html") and "localhost" not in url:
-        if hasattr(logger, 'info'):
-            logger.info("Reading from local company_resource.html")
-        else:
-            print("Reading from local company_resource.html")
-            
-        with open("company_resource.html", "r", encoding="utf-8") as f:
-            html_content = f.read()
-            data = extract_company_data(html_content, url)
-            if data:
-                return data
-
     scraper = ScrapeCompanyDetails(url, logger)
     data = scraper.scrape()
-    
+    breakpoint()
     if data:
         if hasattr(logger, 'info'):
             logger.info(f"Successfully scraped data for {url}")

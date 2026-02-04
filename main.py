@@ -55,57 +55,74 @@ def read_company_name(numberofrecords=10):
         logger.error(f"Error reading from DB: {e}")
         return []
 
+def quit(driver):
+    """Quit driver and cleanup"""
+    try:
+        if driver:
+            driver.quit()
+            logger.info("✓ Driver quit successfully")
+    except Exception as e:
+        logger.error(f"✗ Quit failed: {e}")
+        
 def get_companies_list(search):
     """
     Search PitchBook for a company name and return a list of profile URLs.
     """
     driver = None
-    try:
-        url = 'https://pitchbook.com/profiles/search?q=' + search
-        driver = uc.Chrome(options=get_options(), version_main=143)
-        stealth(driver, languages=["en-US", "en"], vendor="Google Inc.", platform="Win32", webgl_vendor="Intel Inc.", renderer="Intel Iris OpenGL Engine", fix_hairline=True)
-        
-        logger.info(f"Searching PitchBook for: {search} (Title: {driver.title})")
-        driver.get(url)
-        sleep_random(8, 15, for_reason="waiting for search results")
-        
-        page_source = driver.page_source
-        if "Verify you are human" in page_source or "captcha" in page_source.lower():
-            logger.warning("Captcha detected during search!")
-            # Save for debugging
-            with open("search_captcha.html", "w", encoding="utf-8") as f: f.write(page_source)
-            return []
-            
+    company_urls = []
+    
+    for _ in range(20):
         try:
-            links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/profiles/company/']")
-            company_urls = []
-            for link in links:
-                try:
-                    href = link.get_attribute('href')
-                    if href and '/profiles/company/' in href:
-                        # Normalize and deduplicate
-                        clean_url = href.split('?')[0].split('#')[0]
-                        if clean_url not in company_urls:
-                            company_urls.append(clean_url)
-                except:
-                    continue
+            url = 'https://pitchbook.com/profiles/search?q=' + search
+            driver = uc.Chrome(options=get_options(), version_main=143)
+            stealth(driver, languages=["en-US", "en"], vendor="Google Inc.", platform="Win32", webgl_vendor="Intel Inc.", renderer="Intel Iris OpenGL Engine", fix_hairline=True)
             
-            if not company_urls:
-                logger.warning(f"No profile links found on search page for {search}. Saving page for debug.")
-                with open(f"search_debug_{normalize_key(search)}.html", "w", encoding="utf-8") as f: f.write(page_source)
-            else:
-                logger.info(f"Found {len(company_urls)} potential matches for {search}")
+            logger.info(f"Searching PitchBook for: {search} (Title: {driver.title})")
+            
+            for __ in range(5):
+                driver.get(url)
+                driver.get(url)
+                sleep_random(8, 15, for_reason="waiting for search results")
+                page_source = driver.page_source
+                if "Verify you are human" in page_source:
+                    logger.warning("Captcha detected during search!")
+                    continue
+                else:
+                    break
                 
-            return company_urls
+            try:
+                links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/profiles/company/']")
+                for link in links:
+                    try:
+                        href = link.get_attribute('href')
+                        if href and '/profiles/company/' in href:
+                            # Normalize and deduplicate
+                            clean_url = href.split('?')[0].split('#')[0]
+                            if clean_url not in company_urls:
+                                company_urls.append(clean_url)
+                    except:
+                        quit(driver)
+                        continue
+                
+                if not company_urls:
+                    logger.warning(f"No profile links found on search page for {search}. Saving page for debug.")
+                else:
+                    logger.info(f"Found {len(company_urls)} potential matches for {search}")
+                
+                if company_urls :
+                    return company_urls
+                else:
+                    quit(driver)
+                    continue
+            except Exception as e:
+                logger.error(f"Error parsing search results: {e}")
+                quit(driver)
+                continue
         except Exception as e:
-            logger.error(f"Error parsing search results: {e}")
-            return []
-    except Exception as e:
-        logger.error(f"Error in search: {e}")
-        return []
-    finally:
-        if driver:
-            driver.quit()
+            logger.error(f"Error in search: {e}")
+            quit(driver)
+        finally:
+            quit(driver)
 
 def collect_page_details():
     """
