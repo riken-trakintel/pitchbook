@@ -1,7 +1,16 @@
+"""
+PitchBook scraping module with class-based architecture.
+Handles company detail extraction and database operations.
+"""
+
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-import time, random, re, os, json
+import time
+import random
+import re
+import os
+import json
 import logging
 from pymongo import MongoClient
 from selenium.webdriver.common.by import By
@@ -10,8 +19,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import undetected_chromedriver as uc
 from selenium_stealth import stealth
+from driver.get_driver import StartDriver
 
 
+# Constants
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -25,27 +36,31 @@ PROXIES = [
     "83.149.70.159:13082"
 ]
 
+
+# Utility Functions
 def get_proxies():
+    """Get random proxy configuration"""
     prx = random.choice(PROXIES)
     return {"http": f"http://{prx}", "https": f"http://{prx}"}
+
 
 def sleep_random(min_sec=3, max_sec=6, for_reason=""):
     """Sleep for a random duration between min_sec and max_sec."""
     sleep_time = random.uniform(min_sec, max_sec)
+    message = f"Sleeping for {sleep_time:.2f} seconds"
     if for_reason:
-        # Check if logger is passed or use print
-        try:
-            logging.info(f"Sleeping for {sleep_time:.2f} seconds for {for_reason}")
-        except:
-            print(f"Sleeping for {sleep_time:.2f} seconds for {for_reason}")
-    else:
-        try:
-            logging.info(f"Sleeping for {sleep_time:.2f} seconds")
-        except:
-            print(f"Sleeping for {sleep_time:.2f} seconds")
+        message += f" for {for_reason}"
+    
+    try:
+        logging.info(message)
+    except:
+        print(message)
+    
     time.sleep(sleep_time)
 
+
 def get_options():
+    """Get Chrome options with proxy configuration"""
     options = uc.ChromeOptions()
     options.add_argument("--headless")
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -57,34 +72,22 @@ def get_options():
     options.add_argument("--disable-site-isolation-trials")
     return options
 
-def fetch_page(url, retries=3, timeout=20):
-    for _ in range(retries):
-        try:
-            res = requests.get(
-                url,
-                headers=HEADERS,
-                timeout=timeout,
-                proxies=get_proxies()
-            )
-            if res.status_code == 200:
-                return res.text
-        except requests.RequestException:
-            pass
-        time.sleep(1)
-    return None
-
 
 def normalize_key(text: str) -> str:
+    """Normalize text for use as dictionary key"""
     text = text.strip().lower()
     text = re.sub(r"[^a-z0-9]+", "_", text)
     return text.strip("_")
 
+
 def clean_text(el):
+    """Extract and clean text from BeautifulSoup element"""
     return el.get_text(" ", strip=True) if el else None
 
 
-
+# Data Extraction Functions
 def extract_pitchbook_overview(soup):
+    """Extract overview section from PitchBook page"""
     overview = {}
     items = soup.select('[data-pp-overview-item]')
     for item in items:
@@ -95,7 +98,9 @@ def extract_pitchbook_overview(soup):
             overview[key] = value_elem.text.strip()
     return overview
 
+
 def extract_pitchbook_general_info(soup):
+    """Extract general information section"""
     info = {}
     gen_info_sec = soup.select_one('.general-info')
     if not gen_info_sec:
@@ -129,7 +134,9 @@ def extract_pitchbook_general_info(soup):
         
     return info
 
+
 def extract_pitchbook_table(section_soup):
+    """Extract table data from a section"""
     if not section_soup:
         return []
     table = section_soup.find('table')
@@ -138,7 +145,11 @@ def extract_pitchbook_table(section_soup):
     
     headers = [normalize_key(th.text) for th in table.find_all('th')]
     rows = []
-    for tr in table.find('tbody').find_all('tr'):
+    tbody = table.find('tbody')
+    if not tbody:
+        return []
+    
+    for tr in tbody.find_all('tr'):
         cells = tr.find_all('td')
         if len(cells) == len(headers):
             row_data = {}
@@ -150,7 +161,9 @@ def extract_pitchbook_table(section_soup):
             rows.append(row_data)
     return rows
 
+
 def extract_pitchbook_faqs(soup):
+    """Extract FAQ section"""
     faqs = []
     faq_items = soup.select('.pp-faqs-table li')
     for item in faq_items:
@@ -163,7 +176,9 @@ def extract_pitchbook_faqs(soup):
             })
     return faqs
 
+
 def extract_pitchbook_data(html_content, url):
+    """Extract all data from PitchBook company page"""
     soup = BeautifulSoup(html_content, 'html.parser')
     company_name = soup.select_one('.pp-search-wrap__title')
     company_name = company_name.text.strip() if company_name else "Unknown"
@@ -182,7 +197,7 @@ def extract_pitchbook_data(html_content, url):
         'faqs': extract_pitchbook_faqs(soup)
     }
     
-    # Try to extract research items
+    # Extract research items
     research = []
     research_items = soup.select('#research .pp-related-research__item')
     for item in research_items:
@@ -199,22 +214,18 @@ def extract_pitchbook_data(html_content, url):
     
     return data
 
-def extract_company_data(html_content, url):
-    if 'pp-overview' in html_content or 'pitchbook' in html_content.lower():
-        return extract_pitchbook_data(html_content, url)
-    
-    soup = BeautifulSoup(html_content, 'html.parser')
-    return extract_pitchbook_data(html_content, url)
 
+# Database Functions
 def save_to_db(data, collection, stats_collection, logger, unique_field="source_url"):
     """
     Insert or update company data in MongoDB.
 
     Args:
         data (dict): Scraped company data
-        collection (pymongo.collection.Collection): MongoDB collection
-        unique_field (str): Field used to identify uniqueness (default: source_url)
-        logger: CustomLogger instance
+        collection: MongoDB collection
+        stats_collection: MongoDB stats collection
+        logger: Logger instance
+        unique_field (str): Field used to identify uniqueness
     """
     if not data or unique_field not in data:
         if logger:
@@ -224,21 +235,16 @@ def save_to_db(data, collection, stats_collection, logger, unique_field="source_
         return
 
     data["updated_at"] = datetime.utcnow()
-
     query = {unique_field: data[unique_field]}
-
     update = {
         "$set": data,
         "$setOnInsert": {
             "created_at": datetime.utcnow()
         }
     }
+    
     try:
-        result = collection.update_one(
-            query,
-            update,
-            upsert=True
-        )
+        result = collection.update_one(query, update, upsert=True)
 
         if result.matched_count:
             if logger:
@@ -260,21 +266,65 @@ def save_to_db(data, collection, stats_collection, logger, unique_field="source_
             logger.error(f"Error saving to DB: {e}")
         else:
             print(f"Error saving to DB: {e}")
-        
+
+
+# Main Scraper Class
 class ScrapeCompanyDetails:
-    def __init__(self, url, logger=None):
+    """
+    Class-based scraper for PitchBook company details.
+    Uses StartDriver for driver management.
+    """
+    
+    def __init__(self, url, logger=None, driver_type='undetected'):
+        """
+        Initialize the scraper.
+        
+        Args:
+            url (str): Company URL to scrape
+            logger: Logger instance
+            driver_type (str): Type of driver to use
+        """
         self.url = url
+        
         if not logger:
             from logger import CustomLogger
             logger = CustomLogger(log_folder="logs")
             
         self.logger = logger
+        self.driver_type = driver_type
         self.company_resource = None
+        self.driver_instance = None
         self.driver = None
-        self.wait = ''
-        self.get_driver_url()
+        self.wait = None
 
-    def find_element(self, locator: tuple[By, str], timeout: int = 10):
+    def start_driver(self):
+        """Initialize and start the WebDriver"""
+        try:
+            self.driver_instance = StartDriver(driver_type=self.driver_type)
+            self.driver = self.driver_instance.get_driver()
+            
+            if self.driver:
+                self.wait = WebDriverWait(self.driver, 10)
+                # Apply stealth
+                stealth(
+                    self.driver, 
+                    languages=["en-US", "en"], 
+                    vendor="Google Inc.", 
+                    platform="Win32", 
+                    webgl_vendor="Intel Inc.", 
+                    renderer="Intel Iris OpenGL Engine", 
+                    fix_hairline=True
+                )
+                self.logger.info("✓ Driver started successfully")
+                return True
+            else:
+                self.logger.error("✗ Failed to start driver")
+                return False
+        except Exception as e:
+            self.logger.error(f"✗ Error starting driver: {e}")
+            return False
+
+    def find_element(self, locator: tuple, timeout: int = 10):
         """Find element with explicit wait"""
         try:
             wait = WebDriverWait(self.driver, timeout)
@@ -287,7 +337,7 @@ class ScrapeCompanyDetails:
             self.logger.error(f"✗ Error finding element {locator}: {e}")
             return None
     
-    def find_elements(self, locator: tuple[By, str], timeout: int = 10) -> list:
+    def find_elements(self, locator: tuple, timeout: int = 10) -> list:
         """Find multiple elements with explicit wait"""
         try:
             wait = WebDriverWait(self.driver, timeout)
@@ -300,7 +350,7 @@ class ScrapeCompanyDetails:
             self.logger.error(f"✗ Error finding elements {locator}: {e}")
             return []
     
-    def wait_for_element(self, locator: tuple[By, str], timeout: int = 10, condition="presence"):
+    def wait_for_element(self, locator: tuple, timeout: int = 10, condition="presence"):
         """Wait for element with different conditions"""
         conditions = {
             "presence": EC.presence_of_element_located,
@@ -316,7 +366,7 @@ class ScrapeCompanyDetails:
             self.logger.error(f"✗ Element {condition} timeout: {locator}")
             return None
     
-    def is_element_present(self, locator: tuple[By, str], timeout: int = 5) -> bool:
+    def is_element_present(self, locator: tuple, timeout: int = 5) -> bool:
         """Check if element exists without raising exception"""
         try:
             wait = WebDriverWait(self.driver, timeout)
@@ -328,89 +378,131 @@ class ScrapeCompanyDetails:
     def quit(self):
         """Quit driver and cleanup"""
         try:
-            if self.driver:
-                self.driver.quit()
+            if self.driver_instance:
+                self.driver_instance.CloseDriver()
                 self.logger.info("✓ Driver quit successfully")
         except Exception as e:
             self.logger.error(f"✗ Quit failed: {e}")
         
     def get_driver_url(self):
-        for _ in range(20):
-            self.driver = uc.Chrome(options=get_options(), version_main=143)
-            self.wait = WebDriverWait(self.driver,  10)
-            stealth(self.driver, languages=["en-US", "en"], vendor="Google Inc.", platform="Win32", webgl_vendor="Intel Inc.", renderer="Intel Iris OpenGL Engine", fix_hairline=True )
-            if not self.driver :
-                continue
+        """Navigate to URL and handle captcha"""
+        for attempt in range(20):
+            try:
+                if not self.driver:
+                    if not self.start_driver():
+                        continue
                 
-            for __ in range(5):
-                self.driver.get(self.url)
-                sleep_random(for_reason="driver get captcha")
-                if "Verify you are human by completing the action below" in self.driver.find_element(By.TAG_NAME, 'body').text:
-                    self.logger.warning("Captcha detected, retrying...")
-                    sleep_random(5,10)
+                self.logger.info(f"Attempt {attempt + 1}: Navigating to {self.url}")
+                
+                for retry in range(5):
+                    self.driver.get(self.url)
+                    sleep_random(for_reason="waiting for page load")
+                    
+                    body_text = self.driver.find_element(By.TAG_NAME, 'body').text
+                    if "Verify you are human by completing the action below" in body_text:
+                        self.logger.warning("Captcha detected, retrying...")
+                        sleep_random(5, 10)
+                        continue
+                    else:
+                        self.logger.info("✓ Page loaded successfully")
+                        break
+                else:
+                    # All retries failed
+                    self.quit()
                     continue
-                else :
-                    break
-            else :  
+                
+                # Success - get page source
+                self.company_resource = self.driver.page_source
+                return self.company_resource
+                
+            except Exception as e:
+                self.logger.error(f"Error navigating to URL: {e}")
                 self.quit()
                 continue
-            self.company_resource = self.driver.page_source
-            return self.company_resource
-        else :
-            self.logger.error("Failed to bypass captcha after multiple attempts.")
+        
+        self.logger.error("Failed to bypass captcha after multiple attempts.")
         return None
 
     def get_company_resource(self):
-        
+        """Get the stored page source"""
         return self.company_resource
 
     def extract_company_data(self):
-        if isinstance(self.driver, type(None)):
+        """Extract company data from page source"""
+        if not self.driver:
             self.logger.error("Driver not initialized.")
             return {}
         
         page_source = self.driver.page_source 
-        return extract_company_data(page_source, self.url)
+        return extract_pitchbook_data(page_source, self.url)
 
     def scrape(self):
-        if self.logger:
+        """Main scraping method"""
+        try:
             self.logger.info(f"Scraping company details: {self.url}")
-        data = self.extract_company_data()
-        self.quit()
-        return data
+            
+            # Get page
+            if not self.get_driver_url():
+                self.logger.error("Failed to load page")
+                return {}
+            
+            # Extract data
+            data = self.extract_company_data()
+            
+            return data
+        except Exception as e:
+            self.logger.error(f"Error during scraping: {e}")
+            return {}
+        finally:
+            self.quit()
+
 
 def scrape_company(url, logger=None):
+    """
+    Convenience function to scrape a company.
+    
+    Args:
+        url (str): Company URL
+        logger: Logger instance
+        
+    Returns:
+        dict: Scraped company data
+    """
     if logger is None:
         logger = logging.getLogger(__name__)
         if not hasattr(logger, 'handlers') or not logger.handlers:
             logging.basicConfig(level=logging.INFO)
     
     data = {}
-    for _ in range(3):
+    for attempt in range(3):
         scraper = ScrapeCompanyDetails(url, logger)
         data = scraper.scrape()
-        if data['company_name'] == "Unknown":
-            logger.info(f"could not sucessfully scraped data for {url}")
-            continue
-        else:
-            break
         
-    if data:
-        if hasattr(logger, 'info'):
+        if data and data.get('company_name') != "Unknown":
             logger.info(f"Successfully scraped data for {url}")
             return data
-            
-    else:
-        if hasattr(logger, 'error'):
-            logger.error(f"Failed to scrape data for {url}")
-            return {}
+        else:
+            logger.info(f"Attempt {attempt + 1}: Could not successfully scrape data for {url}")
     
+    if not data or data.get('company_name') == "Unknown":
+        logger.error(f"Failed to scrape data for {url} after 3 attempts")
+        return {}
+    
+    return data
 
+
+# Test code
 if __name__ == "__main__":
     from pymongo import MongoClient
     from logger import CustomLogger
+    
     logger = CustomLogger(log_folder="logs")
-    masterclient = MongoClient("mongodb://admin9:i38kjmx35@localhost:27017/?authSource=admin&authMechanism=SCRAM-SHA-256&readPreference=primary&tls=true&tlsAllowInvalidCertificates=true&directConnection=true", serverSelectionTimeoutMS=5000)
+    
+    # MongoDB connection
+    masterclient = MongoClient(
+        "mongodb://admin9:i38kjmx35@localhost:27017/?authSource=admin&authMechanism=SCRAM-SHA-256&readPreference=primary&tls=true&tlsAllowInvalidCertificates=true&directConnection=true",
+        serverSelectionTimeoutMS=5000
+    )
     masterclient.admin.command('ping')
     clientDB = masterclient.PITCHBOOK
     data_collection = clientDB['OrganizationDetails']
@@ -419,12 +511,13 @@ if __name__ == "__main__":
     org_collection = masterdb['OrganiztionDetails']
     stats_collection = masterdb['run_stats']
     logger.info("Connected to MongoDB successfully.")
-    sample_url = "https://pitchbook.com/profiles/company/279690-49"
-    sample_url = "https://pitchbook.com/profiles/company/925292-08"
-    sample_url = "https://pitchbook.com/profiles/company/41082-40"
+    
+    # Test URLs
     sample_url = "https://pitchbook.com/profiles/company/233787-07"
-    data = scrape_company(sample_url)
+    
+    data = scrape_company(sample_url, logger)
     search = sample_url.split("/")[-1]
+    
     if data:
         if data_collection is not None:
             save_to_db(data, data_collection, stats_collection, logger)
